@@ -5,13 +5,14 @@ package stage
 import (
 	"context"
 	"encoding/json"
-	influxdb2 "github.com/influxdata/influxdb-client-go/v2"
-	influxapi "github.com/influxdata/influxdb-client-go/v2/api"
-	"github.com/influxdata/influxdb-client-go/v2/api/write"
 	"os"
 	"pbench/log"
 	"sync/atomic"
 	"time"
+
+	influxdb2 "github.com/influxdata/influxdb-client-go/v2"
+	influxapi "github.com/influxdata/influxdb-client-go/v2/api"
+	"github.com/influxdata/influxdb-client-go/v2/api/write"
 )
 
 type InfluxRunRecorder struct {
@@ -116,4 +117,70 @@ func (i *InfluxRunRecorder) RecordRun(ctx context.Context, s *Stage, results []*
 	if err := i.influxWriter.WritePoint(ctx, point); err != nil {
 		log.Error().Str("run_name", s.States.RunName).Err(err).Msg("failed to send run summary to influxdb")
 	}
+}
+
+// RecordMetrics uploads query metrics to InfluxDB in Prometheus format
+// metrics structure: map[host]map[category]map[metric_name]value
+// Example: metrics["172_20_0_3_10010"]["presto_cpp"]["num_http_request"] = 0.0
+// Field names will be: category_metric_name (e.g., "velox_memory_cache_hit_bytes")
+func (i *InfluxRunRecorder) RecordMetrics(ctx context.Context, queryId string, metrics map[string]map[string]map[string]float64, timestamp *time.Time) {
+	if metrics == nil || len(metrics) == 0 {
+		return
+	}
+
+	// Use current time if timestamp not provided
+	var ts time.Time
+	if timestamp != nil {
+		ts = *timestamp
+	} else {
+		ts = time.Now()
+	}
+
+	// Collect all points into a slice for batch writing
+	var points []*write.Point
+	totalMetrics := 0
+
+	// Iterate through all hosts, categories, and metrics
+	for host, categories := range metrics {
+		for category, metricMap := range categories {
+			for metricName, value := range metricMap {
+				// Create tags similar to Telegraf's Prometheus input
+				tags := map[string]string{
+					"query_id":  queryId,
+					"host":      host,
+					"component": category, // "presto_cpp" or "velox"
+				}
+
+				// Field name format: category_metric_name (e.g., "velox_memory_cache_hit_bytes")
+				fieldName := category + "_" + metricName
+				fields := map[string]interface{}{
+					fieldName: value,
+				}
+
+				// Use "prometheus" as measurement name to match Telegraf format
+				point := write.NewPoint("prometheus", tags, fields, ts)
+				points = append(points, point)
+				totalMetrics++
+			}
+		}
+	}
+
+	// Write all points in a single batch request
+	if len(points) > 0 {
+		if err := i.influxWriter.WritePoint(ctx, points...); err != nil {
+			log.Error().
+				Str("query_id", queryId).
+				Int("total_metrics", totalMetrics).
+				Int("total_hosts", len(metrics)).
+				Err(err).
+				Msg("failed to send metrics to influxdb")
+			return
+		}
+	}
+
+	log.Info().
+		Str("query_id", queryId).
+		Int("total_metrics", totalMetrics).
+		Int("total_hosts", len(metrics)).
+		Msg("uploaded metrics to influxdb")
 }

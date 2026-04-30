@@ -54,7 +54,8 @@ func Run(_ *cobra.Command, args []string) {
 	// Any error run recorder initialization will make the run recorder a noop.
 	// The program will continue with corresponding error logs.
 	mysqlDb = utils.InitMySQLConnFromCfg(MySQLCfgPath)
-	if RecordRun {
+	// Auto-enable RecordRun if either MySQL or InfluxDB config is provided
+	if RecordRun || MySQLCfgPath != "" || InfluxCfgPath != "" {
 		registerRunRecorder(stage.NewFileBasedRunRecorder())
 		registerRunRecorder(stage.NewInfluxRunRecorder(InfluxCfgPath))
 		registerRunRecorder(stage.NewMySQLRunRecorderWithDb(mysqlDb))
@@ -147,12 +148,34 @@ func processFile(ctx context.Context, path string) {
 		log.Error().Err(ioErr).Str("path", path).Msg("failed to read file")
 		return
 	}
+
+	// Parse the full JSON to extract both QueryInfo and Metrics
+	var fullJson struct {
+		Query   *queryjson.QueryInfo                     `json:"query"`
+		Metrics map[string]map[string]map[string]float64 `json:"metrics"`
+	}
+
 	queryInfo := new(queryjson.QueryInfo)
+	var metrics map[string]map[string]map[string]float64
+
 	// Note that this step can succeed with any valid JSON file. But we need to do some additional validation to skip
 	// invalid query JSON files.
 	if unmarshalErr := json.Unmarshal(bytes, queryInfo); unmarshalErr != nil {
-		log.Error().Err(unmarshalErr).Str("path", path).Msg("failed to unmarshal JSON")
-		return
+		// Try to unmarshal as a wrapped format with a "query" key at the top level
+		if wrapperErr := json.Unmarshal(bytes, &fullJson); wrapperErr != nil || fullJson.Query == nil {
+			log.Error().Err(unmarshalErr).Str("path", path).Msg("failed to unmarshal JSON")
+			return
+		}
+		queryInfo = fullJson.Query
+		metrics = fullJson.Metrics
+	} else {
+		// Even if direct unmarshal succeeded, try to get metrics
+		var metricsWrapper struct {
+			Metrics map[string]map[string]map[string]float64 `json:"metrics"`
+		}
+		if metricsErr := json.Unmarshal(bytes, &metricsWrapper); metricsErr == nil {
+			metrics = metricsWrapper.Metrics
+		}
 	}
 	if queryInfo.QueryId == "" || queryInfo.QueryStats == nil || queryInfo.QueryStats.CreateTime == nil {
 		log.Error().Msg("QueryId, QueryStats or QueryStats.CreateTime is empty")
@@ -233,6 +256,21 @@ func processFile(ctx context.Context, path string) {
 		rCtx, rCancel := context.WithTimeout(ctx, time.Second*5)
 		r.RecordQuery(rCtx, pseudoStage, queryResult)
 		rCancel()
+	}
+
+	// Upload metrics to InfluxDB if available
+	if metrics != nil && len(metrics) > 0 {
+		for _, r := range runRecorders {
+			// Use type assertion with interface to check if RecordMetrics is available
+			type MetricsRecorder interface {
+				RecordMetrics(ctx context.Context, queryId string, metrics map[string]map[string]map[string]float64, timestamp *time.Time)
+			}
+			if metricsRecorder, ok := r.(MetricsRecorder); ok {
+				rCtx, rCancel := context.WithTimeout(ctx, time.Second*30)
+				metricsRecorder.RecordMetrics(rCtx, queryInfo.QueryId, metrics, queryResult.EndTime)
+				rCancel()
+			}
+		}
 	}
 	log.Info().Str("path", path).Str("query_id", queryInfo.QueryId).Msg("success")
 	resultChan <- queryResult
