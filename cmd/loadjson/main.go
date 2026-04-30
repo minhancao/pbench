@@ -16,8 +16,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/prestodb/presto-go-client/v2/queryjson"
-
 	"github.com/spf13/cobra"
 )
 
@@ -147,10 +145,10 @@ func processFile(ctx context.Context, path string) {
 		log.Error().Err(ioErr).Str("path", path).Msg("failed to read file")
 		return
 	}
-	queryInfo := new(queryjson.QueryInfo)
+	queryInfo := new(ExtendedQueryInfo)
 	// Note that this step can succeed with any valid JSON file. But we need to do some additional validation to skip
 	// invalid query JSON files.
-	if unmarshalErr := json.Unmarshal(bytes, queryInfo); unmarshalErr != nil {
+	if unmarshalErr := json.Unmarshal(bytes, &queryInfo.QueryInfo); unmarshalErr != nil {
 		log.Error().Err(unmarshalErr).Str("path", path).Msg("failed to unmarshal JSON")
 		return
 	}
@@ -201,7 +199,7 @@ func processFile(ctx context.Context, path string) {
 	if mysqlDb != nil || ExtractPlanJson {
 		// OutputStage is in a tree structure, and we need to flatten it for its ORM to be correctly parsed.
 		// There are many other derived metrics, so we need to do soe preprocessing before sending it to the database.
-		if err := queryInfo.PrepareForInsert(); err != nil {
+		if err := queryInfo.PrepareForInsertWithTextPlan(); err != nil {
 			log.Error().Err(err).Str("path", path).Msg("failed to pre-process query info JSON")
 			return
 		}
