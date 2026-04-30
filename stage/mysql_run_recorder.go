@@ -4,11 +4,13 @@ import (
 	"context"
 	"database/sql"
 	_ "embed"
-	_ "github.com/go-sql-driver/mysql"
+	"os"
 	"pbench/log"
 	"pbench/utils"
 	"sync/atomic"
 	"time"
+
+	_ "github.com/go-sql-driver/mysql"
 )
 
 var (
@@ -16,6 +18,8 @@ var (
 	pbenchRunsDDL string
 	//go:embed pbench_queries_ddl.sql
 	pbenchQueriesDDL string
+	//go:embed pbench_clusters_ddl.sql
+	pbenchClustersDDL string
 )
 
 type MySQLRunRecorder struct {
@@ -38,6 +42,9 @@ func NewMySQLRunRecorderWithDb(db *sql.DB) *MySQLRunRecorder {
 	if err == nil {
 		_, err = db.Exec(pbenchQueriesDDL)
 	}
+	if err == nil {
+		_, err = db.Exec(pbenchClustersDDL)
+	}
 	if err != nil {
 		log.Error().Err(err).Msg("failed to create MySQL table")
 		return nil
@@ -50,6 +57,31 @@ func NewMySQLRunRecorderWithDb(db *sql.DB) *MySQLRunRecorder {
 }
 
 func (m *MySQLRunRecorder) Start(_ context.Context, s *Stage) error {
+	// Record cluster information
+	clusterName := os.Getenv("CLUSTER_NAME")
+	if clusterName == "" {
+		// Fallback to hostname if CLUSTER_NAME is not set
+		if hostname, err := os.Hostname(); err != nil {
+			log.Warn().Err(err).Msg("failed to get hostname, using 'unknown' as cluster name")
+			clusterName = "unknown"
+		} else {
+			clusterName = hostname
+		}
+	}
+
+	recordCluster := `INSERT INTO pbench_clusters (cluster_name, cluster_fqdn, created)
+VALUES (?, ?, ?)
+ON DUPLICATE KEY UPDATE created = VALUES(created)`
+	_, err := m.db.Exec(recordCluster, clusterName, s.States.ServerFQDN, time.Now())
+	if err != nil {
+		log.Error().Err(err).Str("cluster_name", clusterName).Str("cluster_fqdn", s.States.ServerFQDN).
+			Msg("failed to record cluster information to MySQL database")
+		// Don't return error here, just log it and continue with recording the run
+	} else {
+		log.Info().Str("cluster_name", clusterName).Str("cluster_fqdn", s.States.ServerFQDN).
+			Msg("recorded cluster information to MySQL database")
+	}
+
 	recordNewRun := `INSERT INTO pbench_runs (run_name, cluster_fqdn, start_time, queries_ran, failed, mismatch, comment)
 VALUES (?, ?, ?, 0, 0, 0, ?)`
 	res, err := m.db.Exec(recordNewRun, s.States.RunName, s.States.ServerFQDN, s.States.RunStartTime, s.States.Comment)

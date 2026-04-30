@@ -21,9 +21,6 @@ var pulumiHTTPClient = &http.Client{Timeout: 30 * time.Second}
 const PulumiAPIEndpoint = "https://api.pulumi.com"
 const PulumiResourceTypeStack = "pulumi:pulumi:Stack"
 
-//go:embed pbench_clusters_ddl.sql
-var pbenchClustersDDL string
-
 // PulumiMySQLRunRecorder will record the cluster information from Pulumi to MySQL for correlative analysis in Grafana.
 // This is an internal-only recorder with patterns specific to the IBM PrestoDB infrastructure
 // (e.g., cluster FQDN and stack name conventions). It is not intended for external use.
