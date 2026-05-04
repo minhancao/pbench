@@ -34,6 +34,7 @@ var (
 	runStartTime, runEndTime = newSyncedTime(time.Now()), newSyncedTime(time.UnixMilli(0))
 	mysqlDb                  *sql.DB
 	pseudoStage              *stage.Stage
+	metricsWriter            *MetricsInfluxWriter
 
 	parallelismGuard chan struct{}
 	resultChan       = make(chan *stage.QueryResult)
@@ -52,6 +53,7 @@ func Run(_ *cobra.Command, args []string) {
 	// Any error run recorder initialization will make the run recorder a noop.
 	// The program will continue with corresponding error logs.
 	mysqlDb = utils.InitMySQLConnFromCfg(MySQLCfgPath)
+	metricsWriter = NewMetricsInfluxWriter(InfluxCfgPath)
 	if RecordRun {
 		registerRunRecorder(stage.NewFileBasedRunRecorder())
 		registerRunRecorder(stage.NewInfluxRunRecorder(InfluxCfgPath))
@@ -227,6 +229,16 @@ func processFile(ctx context.Context, path string) {
 			return
 		}
 	}
+
+	// Write metrics to InfluxDB if available
+	if metricsWriter != nil {
+		mCtx, mCancel := context.WithTimeout(ctx, time.Second*10)
+		if err := metricsWriter.WriteMetricsFromJSON(mCtx, bytes, queryInfo.QueryId); err != nil {
+			log.Warn().Err(err).Str("query_id", queryInfo.QueryId).Msg("failed to write metrics to InfluxDB")
+		}
+		mCancel()
+	}
+
 	for _, r := range runRecorders {
 		rCtx, rCancel := context.WithTimeout(ctx, time.Second*5)
 		r.RecordQuery(rCtx, pseudoStage, queryResult)
