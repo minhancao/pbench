@@ -5,13 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	presto "github.com/prestodb/presto-go-client/v2"
 	"os"
 	"path/filepath"
 	"pbench/log"
 	"pbench/utils"
 	"strconv"
 	"time"
+
+	presto "github.com/prestodb/presto-go-client/v2"
 
 	"github.com/rs/zerolog"
 )
@@ -229,6 +230,9 @@ func (s *Stage) setDefaults() {
 	if s.SaveJson == nil {
 		s.SaveJson = &falseValue
 	}
+	if s.CollectMetrics == nil {
+		s.CollectMetrics = &falseValue
+	}
 	if s.ColdRuns == nil {
 		s.ColdRuns = intPtr(0)
 	}
@@ -297,6 +301,9 @@ func (s *Stage) propagateStates() {
 			if nextStage.SaveJson == nil {
 				nextStage.SaveJson = s.SaveJson
 			}
+			if nextStage.CollectMetrics == nil {
+				nextStage.CollectMetrics = s.CollectMetrics
+			}
 			nextStage.States = s.States
 			nextStage.Client = s.Client
 		})
@@ -320,17 +327,25 @@ func (s *Stage) saveQueryJsonFile(result *QueryResult) {
 		}
 		querySourceStr := s.querySourceString(result)
 		{
-			queryJsonFile, err := os.OpenFile(
-				filepath.Join(s.States.OutputPath, querySourceStr)+".json",
-				utils.OpenNewFileFlags, 0644)
-			checkErr(err)
-			if err == nil {
-				// We need to save the query json file even if the stage context is canceled.
-				qCtx, qCancel := context.WithTimeout(context.Background(), time.Second*5)
-				_, err = s.Client.GetQueryInfo(qCtx, result.QueryId, queryJsonFile)
-				qCancel()
+			// Check if we have metrics to include
+			if result.MetricsAtStart != nil || result.MetricsAtEnd != nil {
+				// Save with metrics in enhanced format
+				err := s.saveQueryJsonWithMetrics(result, querySourceStr)
 				checkErr(err)
-				checkErr(queryJsonFile.Close())
+			} else {
+				// Save without metrics (original behavior)
+				queryJsonFile, err := os.OpenFile(
+					filepath.Join(s.States.OutputPath, querySourceStr)+".json",
+					utils.OpenNewFileFlags, 0644)
+				checkErr(err)
+				if err == nil {
+					// We need to save the query json file even if the stage context is canceled.
+					qCtx, qCancel := context.WithTimeout(context.Background(), time.Second*5)
+					_, err = s.Client.GetQueryInfo(qCtx, result.QueryId, queryJsonFile)
+					qCancel()
+					checkErr(err)
+					checkErr(queryJsonFile.Close())
+				}
 			}
 		}
 		if result.QueryError != nil {

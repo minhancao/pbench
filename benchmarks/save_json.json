@@ -1,3 +1,4 @@
 {
-  "save_json": true
+  "save_json": true,
+  "collect_metrics": true
 }

@@ -96,7 +96,11 @@ type Stage struct {
 	// Children stages will inherit this value from their parent if it is not set.
 	// When a query failed to execute for whatever reason, a query json file will be automatically saved even if this
 	// knob was not set to true.
-	SaveJson       *bool    `json:"save_json,omitempty"`
+	SaveJson *bool `json:"save_json,omitempty"`
+	// If CollectMetrics is set to true, worker metrics will be collected at query start and end times.
+	// The metrics will be included in the saved JSON file in an enhanced format.
+	// Children stages will inherit this value from their parent if it is not set.
+	CollectMetrics *bool    `json:"collect_metrics,omitempty"`
 	NextStagePaths []string `json:"next,omitempty"`
 	// StreamCount specifies how many parallel instances of this stage should run.
 	// Each stream gets a deterministically derived seed for reproducible randomization.
@@ -671,6 +675,24 @@ func (s *Stage) runQuery(ctx context.Context, query *Query) (result *QueryResult
 		return result, err
 	}
 
+	// Collect metrics at query start if enabled
+	if *s.CollectMetrics && result.QueryId != "" {
+		// Wait a moment for the query to actually start executing
+		time.Sleep(100 * time.Millisecond)
+
+		// Fetch query info to get worker information
+		queryInfo, metricsErr := s.FetchQueryInfoAsMap(ctx, result.QueryId)
+		if metricsErr == nil {
+			startMetrics, metricsErr := s.CollectWorkerMetrics(ctx, queryInfo)
+			if metricsErr == nil {
+				result.MetricsAtStart = startMetrics
+				log.Info().Str("query_id", result.QueryId).Msg("collected metrics at query start")
+			} else {
+				log.Warn().Err(metricsErr).Str("query_id", result.QueryId).Msg("failed to collect start metrics")
+			}
+		}
+	}
+
 	// Log query submission
 	e := log.Info().EmbedObject(result.SimpleLogging())
 	if s.currentCatalog != "" {
@@ -749,6 +771,22 @@ func (s *Stage) runQuery(ctx context.Context, query *Query) (result *QueryResult
 		}
 		return nil
 	})
+
+	// Collect metrics at query end if enabled
+	if *s.CollectMetrics && result.QueryId != "" {
+		// Fetch query info to get worker information
+		queryInfo, metricsErr := s.FetchQueryInfoAsMap(ctx, result.QueryId)
+		if metricsErr == nil {
+			endMetrics, metricsErr := s.CollectWorkerMetrics(ctx, queryInfo)
+			if metricsErr == nil {
+				result.MetricsAtEnd = endMetrics
+				log.Info().Str("query_id", result.QueryId).Msg("collected metrics at query end")
+			} else {
+				log.Warn().Err(metricsErr).Str("query_id", result.QueryId).Msg("failed to collect end metrics")
+			}
+		}
+	}
+
 	// run post query shell scripts
 	postQueryErr := s.runShellScripts(ctx, s.PostQueryShellScripts, s.queryEnv(query, result, err)...)
 	err = errors.Join(err, postQueryErr)

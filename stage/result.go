@@ -1,21 +1,24 @@
 package stage
 
 import (
-	"github.com/rs/zerolog"
 	"pbench/log"
 	"time"
+
+	"github.com/rs/zerolog"
 )
 
 type QueryResult struct {
-	StageId    string
-	Query      *Query
-	QueryId    string
-	InfoUrl    string
-	QueryError error
-	RowCount   int
-	StartTime  time.Time
-	EndTime    *time.Time
-	Duration   *time.Duration
+	StageId        string
+	Query          *Query
+	QueryId        string
+	InfoUrl        string
+	QueryError     error
+	RowCount       int
+	StartTime      time.Time
+	EndTime        *time.Time
+	Duration       *time.Duration
+	MetricsAtStart map[string]WorkerMetrics
+	MetricsAtEnd   map[string]WorkerMetrics
 }
 
 // simpleQueryResult is a wrapper for logging QueryResult with reduced output.
